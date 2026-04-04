@@ -1,0 +1,11 @@
+# Place a rootfs tarball at ~/.docksmith/bases/ubuntu_latest.tar
+# (export from Docker: docker export $(docker create ubuntu:latest) > ubuntu_latest.tar)
+# Then switch FROM to ubuntu:latest and add your app.
+#
+# For layer/cache demos without a base OS, use FROM scratch (empty rootfs).
+
+FROM scratch
+WORKDIR /app
+COPY . /app
+ENV PORT=5000
+CMD ["python", "app.py"]
