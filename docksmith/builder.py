@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import shlex
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -118,7 +117,7 @@ def _run_in_chroot(
     except RuntimeError as e:
         # Re-raise with a cleaner RUN-specific message
         raise RuntimeError(str(e).replace(
-            "Command ['/bin/sh', '-c'", f"RUN command"
+            "Command ['/bin/sh', '-c'", "RUN command"
         )) from e
 
 

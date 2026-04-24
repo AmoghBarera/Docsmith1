@@ -7,7 +7,6 @@ and chroot(1) for filesystem isolation.
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 

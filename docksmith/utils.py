@@ -9,7 +9,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import tarfile
 from pathlib import Path
 
@@ -112,9 +111,7 @@ def tar_directory(root: Path, dest_tar: Path) -> None:
     else:
         # Fallback for Windows (unit tests only — no real Ubuntu rootfs here)
         with tarfile.open(dest_tar, "w") as tf:
-            walked = False
             for dirpath, dirnames, filenames in os.walk(root, topdown=True):
-                walked = True
                 dirnames.sort()
                 filenames.sort()
                 rel_dir = Path(dirpath).relative_to(root)

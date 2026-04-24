@@ -29,7 +29,7 @@ def save_manifest(
     data: dict[str, Any] = {
         "name": name,
         "base": base,
-        "layers": [digest_ref(l) for l in layers],
+        "layers": [digest_ref(layer) for layer in layers],
         "env": env,
         "cmd": cmd,
         "workdir": workdir,
