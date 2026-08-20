@@ -24,10 +24,9 @@ jobs:
 
     - name: Run unit tests
       run: |
-        pytest tests/test_utils.py tests/test_parser.py tests/test_cache.py
+        python -m pytest tests/test_utils.py tests/test_parser.py tests/test_cache.py
 
     - name: Run integration tests (with sudo)
       run: |
         # GitHub Actions runners allow passwordless sudo.
-        # This allows us to test pivot_root, namespaces, and cgroups.
-        sudo env PATH="$PATH" PYTHONPATH="$PYTHONPATH" pytest tests/test_integration.py tests/test_isolation.py
+        sudo env PATH="$PATH" PYTHONPATH="." python -m pytest tests/test_integration.py tests/test_isolation.py
