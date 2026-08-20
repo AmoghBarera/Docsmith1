@@ -12,7 +12,16 @@ from pathlib import Path
 
 from docksmith.layer_store import layer_tar_path
 from docksmith.manifest import load_manifest
-from docksmith.utils import chroot_run, extract_tar_to, is_linux, rm_tree, strip_digest_ref
+from docksmith.network import setup_container_network, teardown_container_network
+from docksmith.utils import (
+    chroot_run,
+    extract_tar_to,
+    is_linux,
+    rm_tree,
+    setup_cgroup,
+    strip_digest_ref,
+)
+import uuid
 
 
 def assemble_rootfs(manifest: dict) -> Path:
@@ -66,6 +75,12 @@ def run_container(
     image_name: str,
     *,
     use_exec: bool = False,
+    memory: str | None = None,
+    cpus: str | None = None,
+    pids_limit: int | None = None,
+    cap_add: list[str] | None = None,
+    hostname: str | None = None,
+    port_mappings: list[str] | None = None,
 ) -> int:
     """
     Load manifest, assemble rootfs, and run the container.
@@ -87,15 +102,52 @@ def run_container(
 
     _validate_rootfs(rootfs, cmd)
 
+    cid = uuid.uuid4().hex[:12]
+    cg_path = None
+    netns_name = None
+    container_ip = None
+    
     try:
+        if is_linux():
+            if memory or cpus or pids_limit:
+                cg_path = setup_cgroup(cid, memory, cpus, pids_limit)
+                print(f"Container limits: Memory={memory or 'unlimited'}, CPUs={cpus or 'unlimited'}, PIDs={pids_limit or 'unlimited'}")
+            
+            # Setup network if we're not just executing interactively/testing on host
+            try:
+                netns_name, container_ip = setup_container_network(cid, port_mappings)
+                print(f"Network setup: IP={container_ip}, netns={netns_name}")
+            except RuntimeError as e:
+                # If network setup fails because bridge doesn't exist etc, we print and fail
+                raise RuntimeError(f"Failed to setup container network: {e}")
+
         # use_exec mode: replace current process (os.execvp can't use the wrapper,
         # so we fall back to a direct subprocess with check=False and return its code)
-        proc = chroot_run(rootfs, cmd, check=False, inject_dns=False)
+        proc = chroot_run(
+            rootfs, 
+            cmd, 
+            check=False, 
+            inject_dns=False, 
+            cgroup_path=cg_path,
+            cid=cid,
+            hostname=hostname,
+            cap_add=cap_add,
+            netns_name=netns_name,
+        )
         return int(proc.returncode)
     except RuntimeError:
         raise
     finally:
         rm_tree(rootfs)
+        
+        if netns_name and container_ip:
+            teardown_container_network(cid, container_ip, port_mappings)
+            
+        if cg_path and cg_path.exists():
+            try:
+                cg_path.rmdir()
+            except OSError:
+                pass
 
 
 def run_container_exec(image_name: str) -> None:

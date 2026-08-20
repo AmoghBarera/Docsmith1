@@ -26,10 +26,29 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     try:
-        return run_container(args.image)
+        return run_container(
+            args.image,
+            memory=args.memory,
+            cpus=args.cpus,
+            pids_limit=args.pids_limit,
+            cap_add=args.cap_add,
+            hostname=args.hostname,
+            port_mappings=args.publish,
+        )
     except Exception as e:
         print(f"run failed: {e}", file=sys.stderr)
         return 1
+
+def _cmd_network(args: argparse.Namespace) -> int:
+    if args.net_command == "setup":
+        from docksmith.network import setup_bridge
+        try:
+            setup_bridge()
+            return 0
+        except Exception as e:
+            print(f"network setup failed: {e}", file=sys.stderr)
+            return 1
+    return 1
 
 
 def _cmd_images(_args: argparse.Namespace) -> int:
@@ -75,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     pr = sub.add_parser("run", help="Run a container from a built image")
     pr.add_argument("image", help="Image name")
+    pr.add_argument("--memory", help="Memory limit (e.g. 512m, 1g)")
+    pr.add_argument("--cpus", help="CPU limit (e.g. 1.0, 0.5)")
+    pr.add_argument("--pids-limit", type=int, help="PIDs limit")
+    pr.add_argument("--cap-add", action="append", help="Add a capability (e.g. CAP_SYS_ADMIN)")
+    pr.add_argument("--hostname", help="Container hostname")
+    pr.add_argument("-p", "--publish", action="append", help="Publish a container's port to the host (e.g. 8080:80)")
     pr.set_defaults(func=_cmd_run)
 
     pi = sub.add_parser("images", help="List images")
@@ -83,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
     px = sub.add_parser("rmi", help="Remove an image manifest")
     px.add_argument("image", help="Image name")
     px.set_defaults(func=_cmd_rmi)
+
+    pn = sub.add_parser("network", help="Network management")
+    pn_sub = pn.add_subparsers(dest="net_command", required=True)
+    pn_setup = pn_sub.add_parser("setup", help="Setup host-side bridge and NAT")
+    pn.set_defaults(func=_cmd_network)
 
     return p
 

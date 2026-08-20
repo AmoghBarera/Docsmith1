@@ -9,6 +9,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -19,6 +20,50 @@ def docksmith_home() -> Path:
     if base:
         return Path(base).expanduser().resolve()
     return Path.home() / ".docksmith"
+
+CAPS = {
+    "CAP_CHOWN": 0,
+    "CAP_DAC_OVERRIDE": 1,
+    "CAP_DAC_READ_SEARCH": 2,
+    "CAP_FOWNER": 3,
+    "CAP_FSETID": 4,
+    "CAP_KILL": 5,
+    "CAP_SETGID": 6,
+    "CAP_SETUID": 7,
+    "CAP_SETPCAP": 8,
+    "CAP_LINUX_IMMUTABLE": 9,
+    "CAP_NET_BIND_SERVICE": 10,
+    "CAP_NET_BROADCAST": 11,
+    "CAP_NET_ADMIN": 12,
+    "CAP_NET_RAW": 13,
+    "CAP_IPC_LOCK": 14,
+    "CAP_IPC_OWNER": 15,
+    "CAP_SYS_MODULE": 16,
+    "CAP_SYS_RAWIO": 17,
+    "CAP_SYS_CHROOT": 18,
+    "CAP_SYS_PTRACE": 19,
+    "CAP_SYS_PACCT": 20,
+    "CAP_SYS_ADMIN": 21,
+    "CAP_SYS_BOOT": 22,
+    "CAP_SYS_NICE": 23,
+    "CAP_SYS_RESOURCE": 24,
+    "CAP_SYS_TIME": 25,
+    "CAP_SYS_TTY_CONFIG": 26,
+    "CAP_MKNOD": 27,
+    "CAP_LEASE": 28,
+    "CAP_AUDIT_WRITE": 29,
+    "CAP_AUDIT_CONTROL": 30,
+    "CAP_SETFCAP": 31,
+    "CAP_MAC_OVERRIDE": 32,
+    "CAP_MAC_ADMIN": 33,
+    "CAP_SYSLOG": 34,
+    "CAP_WAKE_ALARM": 35,
+    "CAP_BLOCK_SUSPEND": 36,
+    "CAP_AUDIT_READ": 37,
+    "CAP_PERFMON": 38,
+    "CAP_BPF": 39,
+    "CAP_CHECKPOINT_RESTORE": 40,
+}
 
 
 def layers_dir() -> Path:
@@ -156,20 +201,81 @@ def extract_tar_to(tar_path: Path, dest: Path) -> None:
             tf.extractall(dest)
 
 
+def parse_memory_string(mem: str) -> int:
+    """Parse memory strings like '512m', '1g' to bytes."""
+    mem = mem.lower().strip()
+    if mem.endswith("k"):
+        return int(mem[:-1]) * 1024
+    if mem.endswith("m"):
+        return int(mem[:-1]) * 1024 * 1024
+    if mem.endswith("g"):
+        return int(mem[:-1]) * 1024 * 1024 * 1024
+    return int(mem)
+
+
+def setup_cgroup(cid: str, memory: str | None, cpus: str | None, pids: int | None) -> Path:
+    """
+    Sets up a cgroup v2 directory for the container and writes limits.
+    Returns the path to the container's cgroup directory.
+    """
+    cg_base = Path("/sys/fs/cgroup")
+    if not (cg_base / "cgroup.controllers").exists():
+        raise RuntimeError("cgroup v2 unified hierarchy is not mounted at /sys/fs/cgroup. Please enable cgroup v2.")
+
+    ds_cg = cg_base / "docksmith"
+    ds_cg.mkdir(exist_ok=True)
+
+    # Attempt to enable controllers in docksmith subtree
+    try:
+        (cg_base / "cgroup.subtree_control").write_text("+cpu +memory +pids\n")
+    except OSError:
+        pass
+
+    try:
+        (ds_cg / "cgroup.subtree_control").write_text("+cpu +memory +pids\n")
+    except OSError:
+        pass
+
+    cg_path = ds_cg / cid
+    cg_path.mkdir(exist_ok=True)
+
+    if memory:
+        bytes_val = parse_memory_string(memory)
+        (cg_path / "memory.max").write_text(str(bytes_val))
+    
+    if cpus:
+        val = float(cpus)
+        quota = int(val * 100000)
+        (cg_path / "cpu.max").write_text(f"{quota} 100000")
+        
+    if pids:
+        (cg_path / "pids.max").write_text(str(pids))
+
+    return cg_path
+
+
 def chroot_run(
     rootfs: Path,
     cmd: list[str],
     *,
     check: bool = True,
     inject_dns: bool = True,
+    cgroup_path: Path | None = None,
+    cid: str | None = None,
+    hostname: str | None = None,
+    cap_add: list[str] | None = None,
+    netns_name: str | None = None,
 ) -> subprocess.CompletedProcess:
     """
-    Run a command inside a chroot with a fully prepared namespace.
+    Run a command inside a pivot_root environment with a fully prepared namespace.
 
     Sets up:
-      - unshare: mount, UTS, IPC, PID namespaces
+      - unshare: mount, UTS, IPC, PID, NET namespaces
       - bind-mounts /dev, /sys from the host (gives access to /dev/null, gpg, etc.)
-      - /proc via --mount-proc
+      - mounts /proc in the new rootfs
+      - Uses pivot_root instead of chroot for a stronger security boundary.
+      - Sets the container hostname if specified, otherwise uses cid.
+      - Drops capabilities from the bounding set (leaves minimal defaults or cap_add).
       - DNS: copies host /etc/resolv.conf into rootfs for the duration of the call,
         then restores the original (so it never leaks into a layer snapshot)
 
@@ -181,6 +287,16 @@ def chroot_run(
         raise RuntimeError("chroot_run is only supported on Linux.")
 
     rootfs_abs = str(rootfs.resolve())
+    
+    keep_caps_ints = {0, 1, 3, 5, 6, 7}  # CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETUID, SETGID
+    if cap_add:
+        for cap in cap_add:
+            cap_upper = cap.upper()
+            if not cap_upper.startswith("CAP_"):
+                cap_upper = f"CAP_{cap_upper}"
+            if cap_upper not in CAPS:
+                raise ValueError(f"Unknown capability: {cap}")
+            keep_caps_ints.add(CAPS[cap_upper])
 
     # --- DNS injection ---
     guest_resolv = rootfs / "etc" / "resolv.conf"
@@ -192,31 +308,120 @@ def chroot_run(
             resolv_backup = guest_resolv.read_bytes()
         shutil.copy2(host_resolv, guest_resolv)
 
-    # --- Wrapper: bind-mount /dev and /sys then chroot ---
-    # All mounts are confined to the private mount namespace and cleaned up on exit.
-    cmd_str = " ".join(shlex.quote(str(c)) for c in cmd)
-    wrapper = (
-        f"mount --bind /dev {rootfs_abs}/dev && "
-        f"mount --bind /sys {rootfs_abs}/sys && "
-        f"chroot {rootfs_abs} {cmd_str}"
-    )
-    argv = [
+    # --- Wrapper: bind-mount /dev and /sys, mount /proc, then pivot_root ---
+    # We use an inline Python script run by the host's Python executable.
+    # This avoids dynamic linking issues if we try to execute host binaries (like umount)
+    # after the root has been pivoted.
+    wrapper = f'''
+import os
+import sys
+import subprocess
+import ctypes
+import ctypes.util
+import socket
+
+def run(c, msg):
+    if subprocess.call(c, shell=True) != 0:
+        print(f"Error: {{msg}}", file=sys.stderr)
+        sys.exit(1)
+
+rootfs = {repr(rootfs_abs)}
+old_root = os.path.join(rootfs, ".old_root")
+
+run(f"mount --bind '{{rootfs}}' '{{rootfs}}'", "bind mount rootfs onto itself failed")
+run(f"mkdir -p '{{old_root}}'", "mkdir .old_root failed")
+run(f"mount --bind /dev '{{rootfs}}/dev'", "mount /dev failed")
+run(f"mount --bind /sys '{{rootfs}}/sys'", "mount /sys failed")
+run(f"mount -t proc proc '{{rootfs}}/proc'", "mount /proc failed")
+
+# system pivot_root before chdir
+run(f"pivot_root '{{rootfs}}' '{{old_root}}'", "pivot_root failed")
+
+try:
+    os.chdir("/")
+except Exception as e:
+    print(f"Error: chdir / failed: {{e}}", file=sys.stderr)
+    sys.exit(1)
+
+# Set Hostname
+try:
+    target_hostname = {repr(hostname)}
+    target_cid = {repr(cid)}
+    if target_hostname:
+        socket.sethostname(target_hostname)
+    elif target_cid:
+        socket.sethostname(target_cid)
+except Exception as e:
+    print(f"Error: sethostname failed: {{e}}", file=sys.stderr)
+    sys.exit(1)
+
+# Now use ctypes for umount2 so we don't need umount inside the container
+libc_path = ctypes.util.find_library("c") or "libc.so.6"
+libc = ctypes.CDLL(libc_path)
+
+# MNT_DETACH = 2
+if libc.umount2(b"/.old_root", 2) != 0:
+    print("Error: umount2 /.old_root failed", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    os.rmdir("/.old_root")
+except Exception as e:
+    print(f"Error: rmdir /.old_root failed: {{e}}", file=sys.stderr)
+    sys.exit(1)
+
+# Drop capabilities
+try:
+    PR_CAPBSET_DROP = 24
+    caps_to_keep = {repr(keep_caps_ints)}
+    for cap in range(64):
+        if cap not in caps_to_keep:
+            libc.prctl(PR_CAPBSET_DROP, cap, 0, 0, 0)
+except Exception as e:
+    print(f"Error dropping capabilities: {{e}}", file=sys.stderr)
+    sys.exit(1)
+
+cmd = {repr(cmd)}
+try:
+    os.execvp(cmd[0], cmd)
+except Exception as e:
+    print(f"Error: execvp {{cmd}} failed: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+    argv = []
+    if netns_name:
+        argv.extend(["nsenter", f"--net=/var/run/netns/{netns_name}"])
+
+    argv.extend([
         "unshare",
         "--mount",
         "--uts",
         "--ipc",
         "--pid",
+    ])
+    
+    if not netns_name:
+        argv.append("--net")
+        
+    argv.extend([
         "--fork",
-        "--mount-proc",
-        "/bin/sh", "-c",
+        sys.executable, "-c",
         wrapper,
-    ]
+    ])
+
+    def preexec():
+        if cgroup_path:
+            try:
+                with open(cgroup_path / "cgroup.procs", "w") as f:
+                    f.write(str(os.getpid()))
+            except OSError as exc:
+                print(f"Failed to write to cgroup.procs: {exc}", file=sys.stderr)
 
     try:
-        proc = subprocess.run(argv)
+        proc = subprocess.run(argv, preexec_fn=preexec)
     except FileNotFoundError as e:
         raise RuntimeError(
-            "unshare or chroot not found. Install util-linux and run as root."
+            "unshare not found. Install util-linux and run as root."
         ) from e
     finally:
         # --- DNS restore ---
