@@ -335,8 +335,11 @@ old_root = os.path.join(rootfs, ".old_root")
 
 run(f"mount --bind '{{rootfs}}' '{{rootfs}}'", "bind mount rootfs onto itself failed")
 run(f"mkdir -p '{{old_root}}'", "mkdir .old_root failed")
+run(f"mkdir -p '{{rootfs}}/dev'", "mkdir /dev failed")
 run(f"mount --bind /dev '{{rootfs}}/dev'", "mount /dev failed")
+run(f"mkdir -p '{{rootfs}}/sys'", "mkdir /sys failed")
 run(f"mount --bind /sys '{{rootfs}}/sys'", "mount /sys failed")
+run(f"mkdir -p '{{rootfs}}/proc'", "mkdir /proc failed")
 run(f"mount -t proc proc '{{rootfs}}/proc'", "mount /proc failed")
 
 # system pivot_root before chdir
