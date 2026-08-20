@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import typing
 from pathlib import Path
 
 
@@ -265,6 +266,10 @@ def chroot_run(
     hostname: str | None = None,
     cap_add: list[str] | None = None,
     netns_name: str | None = None,
+    rootless: bool = False,
+    seccomp_profile: str | None = "default",
+    log_path: Path | None = None,
+    on_start: typing.Callable[[int], None] | None = None,
 ) -> subprocess.CompletedProcess:
     """
     Run a command inside a pivot_root environment with a fully prepared namespace.
@@ -382,6 +387,50 @@ except Exception as e:
     sys.exit(1)
 
 cmd = {repr(cmd)}
+if {repr(seccomp_profile)} != "unconfined":
+    import ctypes
+    
+    # Blocked syscalls for default profile (x86_64)
+    blocked_syscalls = [
+        165, # mount
+        166, # umount2
+        167, # swapon
+        168, # swapoff
+        169, # reboot
+        175, # init_module
+        176, # delete_module
+        246, # kexec_load
+        313, # finit_module
+    ]
+    
+    BPF_LD_W_ABS = 0x20
+    BPF_JMP_JEQ_K = 0x15
+    BPF_RET_K = 0x06
+    SECCOMP_RET_ERRNO = 0x00050000 | 1
+    SECCOMP_RET_ALLOW = 0x7fff0000
+
+    class sock_filter(ctypes.Structure):
+        _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8), ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+
+    class sock_fprog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(sock_filter))]
+
+    filters = [sock_filter(BPF_LD_W_ABS, 0, 0, 0)]
+    for sc in blocked_syscalls:
+        filters.append(sock_filter(BPF_JMP_JEQ_K, 0, 1, sc))
+        filters.append(sock_filter(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO))
+    filters.append(sock_filter(BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW))
+    
+    FilterArray = sock_filter * len(filters)
+    prog = sock_fprog(len(filters), FilterArray(*filters))
+    
+    libc = ctypes.CDLL(libc_path, use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0: # PR_SET_NO_NEW_PRIVS
+        print(f"Warning: prctl(PR_SET_NO_NEW_PRIVS) failed: {{ctypes.get_errno()}}", file=sys.stderr)
+    
+    if libc.prctl(22, 2, ctypes.byref(prog)) != 0: # PR_SET_SECCOMP
+        print(f"Warning: prctl(PR_SET_SECCOMP) failed: {{ctypes.get_errno()}}", file=sys.stderr)
+
 try:
     os.execvp(cmd[0], cmd)
 except Exception as e:
@@ -389,18 +438,22 @@ except Exception as e:
     sys.exit(1)
 '''
     argv = []
-    if netns_name:
+    if not rootless and netns_name:
         argv.extend(["nsenter", f"--net=/var/run/netns/{netns_name}"])
 
+    argv.extend(["unshare"])
+    
+    if rootless:
+        argv.extend(["--user", "--map-root-user"])
+
     argv.extend([
-        "unshare",
         "--mount",
         "--uts",
         "--ipc",
         "--pid",
     ])
     
-    if not netns_name:
+    if rootless or not netns_name:
         argv.append("--net")
         
     argv.extend([
@@ -417,8 +470,30 @@ except Exception as e:
             except OSError as exc:
                 print(f"Failed to write to cgroup.procs: {exc}", file=sys.stderr)
 
+    stdout_arg = subprocess.PIPE if log_path else None
+    stderr_arg = subprocess.STDOUT if log_path else None
+    
     try:
-        proc = subprocess.run(argv, preexec_fn=preexec)
+        proc = subprocess.Popen(argv, preexec_fn=preexec, stdout=stdout_arg, stderr=stderr_arg, text=False)
+        if on_start:
+            on_start(proc.pid)
+            
+        if log_path:
+            import threading
+            def pump():
+                with open(log_path, "ab") as f:
+                    while True:
+                        chunk = proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        f.flush()
+                        sys.stdout.buffer.write(chunk)
+                        sys.stdout.buffer.flush()
+            t = threading.Thread(target=pump, daemon=True)
+            t.start()
+            
+        proc.wait()
     except FileNotFoundError as e:
         raise RuntimeError(
             "unshare not found. Install util-linux and run as root."
@@ -436,7 +511,7 @@ except Exception as e:
             f"Command {cmd} failed inside chroot with exit code {proc.returncode}"
         )
 
-    return proc
+    return subprocess.CompletedProcess(args=argv, returncode=proc.returncode, stdout=b"", stderr=b"")
 
 
 def copy_tree(src: Path, dst: Path) -> None:
