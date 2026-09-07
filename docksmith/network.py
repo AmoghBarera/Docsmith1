@@ -7,9 +7,9 @@ from pathlib import Path
 
 from docksmith.utils import docksmith_home
 
-BRIDGE_NAME = "docksmith0"
-SUBNET_CIDR = "172.30.0.1/24"
-SUBNET_PREFIX = "172.30.0"
+BRIDGE_NAME = os.environ.get("DOCKSMITH_BRIDGE", "docksmith0")
+SUBNET_CIDR = os.environ.get("DOCKSMITH_SUBNET", "172.30.0.1/24")
+SUBNET_PREFIX = os.environ.get("DOCKSMITH_SUBNET_PREFIX", "172.30.0")
 IP_POOL_FILE = docksmith_home() / "ip_pool.json"
 
 def run_cmd(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -200,6 +200,11 @@ def teardown_container_network(cid: str, ip: str, port_mappings: list[str] | Non
             except Exception:
                 pass
                 
-    run_cmd(["ip", "netns", "delete", netns_name], check=False)
+    try:
+        res = run_cmd(["ip", "netns", "delete", netns_name], check=False)
+        if res.returncode != 0:
+            print(f"Warning: Failed to delete netns {netns_name}: {res.stderr}", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Exception deleting netns {netns_name}: {e}", file=sys.stderr)
     
     release_ip(cid)

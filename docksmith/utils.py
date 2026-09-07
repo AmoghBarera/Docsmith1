@@ -146,7 +146,7 @@ def tar_directory(root: Path, dest_tar: Path) -> None:
         # -C: change into root so paths inside tar are relative (no leading /)
         # .: archive everything under root
         result = subprocess.run(
-            ["tar", "-cf", str(dest_tar.resolve()), "-C", str(root), "."],
+            ["tar", "-cf", str(dest_tar.resolve()), "-C", str(root), "--transform", "s,^\\./,,", "."],
             capture_output=True,
             text=True,
         )

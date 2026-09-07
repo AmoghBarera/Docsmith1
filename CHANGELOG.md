@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 ### Fixed
+- **Low (Issue 9):** Prevented `tar` from prefixing all archive paths with `./` by using `--transform='s,^\./,,'`.
+- **Low (Issue 8):** Changed network constants (`BRIDGE_NAME`, `SUBNET_CIDR`, `SUBNET_PREFIX`) to fall back to environment variables instead of being entirely hardcoded.
+- **Medium (Issue 7):** Added error handling to network teardown logic to prevent failures in `ip netns delete` from blocking IP deallocation.
 - **Medium (Issue 6):** Optimized memory usage during `COPY` hashing by using `os.walk` to incrementally stream and hash file paths, instead of loading all `rglob` results into memory.
 - **High (Issue 4):** Fixed redundant full-filesystem layer snapshots in `builder.py`. The builder now uses `overlayfs` during the build process, capturing only the `upperdir` diffs for each layer. This significantly reduces storage space and improves build performance.
 - **High (Issue 3):** Fixed resource leaks on container exit by adding `SIGINT`/`SIGTERM` handlers and skipping `rm_tree` if `umount` fails.
