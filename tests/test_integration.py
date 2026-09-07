@@ -20,6 +20,7 @@ def docksmith_bin():
 @pytest.fixture(scope="module")
 def test_image(docksmith_bin):
     """Creates a basic image using a statically compiled C binary."""
+    subprocess.run(docksmith_bin + ["network", "setup"], check=True)
     with tempfile.TemporaryDirectory() as td:
         ctx = Path(td)
         
