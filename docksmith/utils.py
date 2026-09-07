@@ -556,20 +556,35 @@ def hash_paths_for_copy(context: Path, src_pattern: str) -> str:
         h.update(sha256_file(src).encode())
         return h.hexdigest()
 
-    paths = sorted(src.rglob("*"), key=lambda p: str(p.relative_to(src)))
     h.update(src_pattern.encode())
-    for p in paths:
-        rel = p.relative_to(src).as_posix()
-        h.update(rel.encode())
-        h.update(b"\0")
-        if p.is_file():
-            h.update(sha256_file(p).encode())
-        elif p.is_dir():
-            h.update(b"dir\0")
-        elif p.is_symlink():
-            h.update(b"link\0")
-            h.update(os.readlink(p).encode())
-        h.update(b"|")
+    for root, dirs, files in os.walk(src):
+        dirs.sort()
+        files.sort()
+        root_path = Path(root)
+        
+        for d in dirs:
+            p = root_path / d
+            rel = p.relative_to(src).as_posix()
+            h.update(rel.encode())
+            h.update(b"\0")
+            if p.is_symlink():
+                h.update(b"link\0")
+                h.update(os.readlink(p).encode())
+            else:
+                h.update(b"dir\0")
+            h.update(b"|")
+            
+        for f in files:
+            p = root_path / f
+            rel = p.relative_to(src).as_posix()
+            h.update(rel.encode())
+            h.update(b"\0")
+            if p.is_symlink():
+                h.update(b"link\0")
+                h.update(os.readlink(p).encode())
+            elif p.is_file():
+                h.update(sha256_file(p).encode())
+            h.update(b"|")
     return h.hexdigest()
 
 
