@@ -145,15 +145,21 @@ def tar_directory(root: Path, dest_tar: Path) -> None:
         # Use system tar: handles symlinked dirs, devices, and all special files
         # -C: change into root so paths inside tar are relative (no leading /)
         # .: archive everything under root
-        result = subprocess.run(
-            ["tar", "-cf", str(dest_tar.resolve()), "-C", str(root), "--transform", "s,^\\./,,", "."],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"tar creation failed (exit {result.returncode}):\n{result.stderr.strip()}"
+        files = os.listdir(root)
+        if not files:
+            # Empty directory, create empty tar
+            with tarfile.open(dest_tar, "w") as tf:
+                pass
+        else:
+            result = subprocess.run(
+                ["tar", "-cf", str(dest_tar.resolve()), "-C", str(root)] + files,
+                capture_output=True,
+                text=True,
             )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"tar creation failed (exit {result.returncode}):\n{result.stderr.strip()}"
+                )
     else:
         # Fallback for Windows (unit tests only — no real Ubuntu rootfs here)
         with tarfile.open(dest_tar, "w") as tf:
