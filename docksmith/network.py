@@ -62,39 +62,75 @@ def setup_bridge() -> None:
 def allocate_ip(cid: str) -> str:
     """Allocates the next available IP for a container ID."""
     if not IP_POOL_FILE.exists():
-        IP_POOL_FILE.write_text("{}")
-    
-    with open(IP_POOL_FILE, "r") as f:
-        pool = json.load(f)
-    
-    if cid in pool:
-        return pool[cid]
-        
-    used_ips = set(pool.values())
-    
-    for i in range(2, 255):
-        ip = f"{SUBNET_PREFIX}.{i}"
-        if ip not in used_ips:
-            pool[cid] = ip
-            with open(IP_POOL_FILE, "w") as f:
-                json.dump(pool, f)
-            return ip
-            
-    raise RuntimeError("No available IP addresses in the pool")
+        try:
+            IP_POOL_FILE.write_text("{}")
+        except OSError:
+            pass
+
+    with open(IP_POOL_FILE, "r+") as f:
+        try:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except ImportError:
+            pass
+
+        content = f.read()
+        pool = json.loads(content) if content else {}
+
+        if cid in pool:
+            return pool[cid]
+
+        used_ips = set(pool.values())
+        assigned = None
+        for i in range(2, 255):
+            ip = f"{SUBNET_PREFIX}.{i}"
+            if ip not in used_ips:
+                pool[cid] = ip
+                assigned = ip
+                break
+
+        if not assigned:
+            raise RuntimeError("No available IP addresses in the pool")
+
+        f.seek(0)
+        f.truncate()
+        json.dump(pool, f)
+
+        try:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except ImportError:
+            pass
+
+    return assigned
 
 
 def release_ip(cid: str) -> None:
     """Releases an IP allocated to a container ID."""
     if not IP_POOL_FILE.exists():
         return
-        
-    with open(IP_POOL_FILE, "r") as f:
-        pool = json.load(f)
-        
-    if cid in pool:
-        del pool[cid]
-        with open(IP_POOL_FILE, "w") as f:
+
+    with open(IP_POOL_FILE, "r+") as f:
+        try:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except ImportError:
+            pass
+
+        content = f.read()
+        pool = json.loads(content) if content else {}
+
+        if cid in pool:
+            del pool[cid]
+            f.seek(0)
+            f.truncate()
             json.dump(pool, f)
+
+        try:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except ImportError:
+            pass
 
 
 def setup_container_network(cid: str, port_mappings: list[str] | None = None) -> tuple[str, str]:
