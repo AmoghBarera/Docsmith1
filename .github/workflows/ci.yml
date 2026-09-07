@@ -29,4 +29,5 @@ jobs:
     - name: Run integration tests (with sudo)
       run: |
         # GitHub Actions runners allow passwordless sudo.
+        sudo env PATH="$PATH" PYTHONPATH="." python main.py network setup
         sudo env PATH="$PATH" PYTHONPATH="." python -m pytest tests/test_integration.py tests/test_isolation.py
