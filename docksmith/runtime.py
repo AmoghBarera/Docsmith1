@@ -121,6 +121,18 @@ def run_container(
 
     Requires Linux and usually sudo/root for chroot + unshare.
     """
+    import signal
+    import sys
+
+    def _sig_handler(signum, frame):
+        sys.exit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _sig_handler)
+        signal.signal(signal.SIGINT, _sig_handler)
+    except ValueError:
+        pass
+
     if not is_linux():
         raise RuntimeError("docksmith run is only supported on Linux.")
 
@@ -197,20 +209,37 @@ def run_container(
     finally:
         update_state_status(cid, "exited")
         # Cleanup OverlayFS
-        subprocess.run(["umount", str(rootfs)], check=False)
-        if not keep:
-            rm_tree(cont_dir)
+        umount_res = subprocess.run(["umount", str(rootfs)], check=False)
+        if umount_res.returncode != 0:
+            print(f"Warning: Failed to unmount {rootfs}. Skipping directory removal to prevent data loss.", file=sys.stderr)
         else:
-            print(f"Container state preserved at {cont_dir}")
+            if not keep:
+                rm_tree(cont_dir)
+            else:
+                print(f"Container state preserved at {cont_dir}")
         
         if netns_name and container_ip:
             teardown_container_network(cid, container_ip, port_mappings)
             
         if cg_path and cg_path.exists():
+            import time
+            procs_file = cg_path / "cgroup.procs"
             try:
-                cg_path.rmdir()
+                if procs_file.exists():
+                    pids = procs_file.read_text().split()
+                    for p in pids:
+                        try:
+                            os.kill(int(p), signal.SIGKILL)
+                        except OSError:
+                            pass
+                    if pids:
+                        time.sleep(0.1)
             except OSError:
                 pass
+            try:
+                cg_path.rmdir()
+            except OSError as e:
+                print(f"Warning: Failed to remove cgroup {cg_path}: {e}", file=sys.stderr)
 
 
 def run_container_exec(image_name: str) -> None:
