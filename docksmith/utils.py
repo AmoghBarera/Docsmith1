@@ -326,24 +326,24 @@ import ctypes.util
 import socket
 
 def run(c, msg):
-    if subprocess.call(c, shell=True) != 0:
-        print(f"Error: {{msg}}", file=sys.stderr)
+    if subprocess.call(c, shell=False) != 0:
+        print(f"Error: {msg}", file=sys.stderr)
         sys.exit(1)
 
 rootfs = {repr(rootfs_abs)}
 old_root = os.path.join(rootfs, ".old_root")
 
-run(f"mount --bind '{{rootfs}}' '{{rootfs}}'", "bind mount rootfs onto itself failed")
-run(f"mkdir -p '{{old_root}}'", "mkdir .old_root failed")
-run(f"mkdir -p '{{rootfs}}/dev'", "mkdir /dev failed")
-run(f"mount --bind /dev '{{rootfs}}/dev'", "mount /dev failed")
-run(f"mkdir -p '{{rootfs}}/sys'", "mkdir /sys failed")
-run(f"mount --bind /sys '{{rootfs}}/sys'", "mount /sys failed")
-run(f"mkdir -p '{{rootfs}}/proc'", "mkdir /proc failed")
-run(f"mount -t proc proc '{{rootfs}}/proc'", "mount /proc failed")
+run(["mount", "--bind", rootfs, rootfs], "bind mount rootfs onto itself failed")
+os.makedirs(old_root, exist_ok=True)
+os.makedirs(os.path.join(rootfs, "dev"), exist_ok=True)
+run(["mount", "--bind", "/dev", os.path.join(rootfs, "dev")], "mount /dev failed")
+os.makedirs(os.path.join(rootfs, "sys"), exist_ok=True)
+run(["mount", "--bind", "/sys", os.path.join(rootfs, "sys")], "mount /sys failed")
+os.makedirs(os.path.join(rootfs, "proc"), exist_ok=True)
+run(["mount", "-t", "proc", "proc", os.path.join(rootfs, "proc")], "mount /proc failed")
 
 # system pivot_root before chdir
-run(f"pivot_root '{{rootfs}}' '{{old_root}}'", "pivot_root failed")
+run(["pivot_root", rootfs, old_root], "pivot_root failed")
 
 try:
     os.chdir("/")
