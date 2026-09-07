@@ -31,6 +31,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         return run_container(
             args.image,
+            cmd_override=args.cmd if args.cmd else None,
             memory=args.memory,
             cpus=args.cpus,
             pids_limit=args.pids_limit,
@@ -237,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--keep", action="store_true", help="Keep the container's overlayfs directories after exit")
     pr.add_argument("--rootless", action="store_true", help="Run in rootless mode using user namespaces")
     pr.add_argument("--seccomp", default="default", help="Seccomp profile (e.g. 'unconfined', 'default')")
+    pr.add_argument("cmd", nargs=argparse.REMAINDER, help="Override image CMD with a custom command")
     pr.set_defaults(func=_cmd_run)
 
     pi = sub.add_parser("images", help="List images")
