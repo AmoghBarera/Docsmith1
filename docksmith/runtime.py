@@ -106,6 +106,7 @@ def run_container(
     image_name: str,
     *,
     use_exec: bool = False,
+    cmd_override: list[str] | None = None,
     memory: str | None = None,
     cpus: str | None = None,
     pids_limit: int | None = None,
@@ -142,9 +143,12 @@ def run_container(
     # Setup overlayfs rootfs
     rootfs, cont_dir = setup_overlayfs(manifest, image_name, cid)
 
-    cmd = manifest.get("cmd")
-    if not cmd:
-        raise RuntimeError("No CMD found in image manifest.")
+    if cmd_override:
+        cmd = cmd_override
+    else:
+        cmd = manifest.get("cmd")
+        if not cmd:
+            raise RuntimeError("No CMD found in image manifest.")
 
     if not isinstance(cmd, list):
         raise RuntimeError("CMD must be a list.")

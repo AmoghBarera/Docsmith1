@@ -31,6 +31,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         return run_container(
             args.image,
+            cmd_override=args.cmd_override,
             memory=args.memory,
             cpus=args.cpus,
             pids_limit=args.pids_limit,
@@ -228,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pr = sub.add_parser("run", help="Run a container from a built image")
     pr.add_argument("image", help="Image name")
+    pr.add_argument("cmd_override", nargs=argparse.REMAINDER, help="Override default CMD")
     pr.add_argument("--memory", help="Memory limit (e.g. 512m, 1g)")
     pr.add_argument("--cpus", help="CPU limit (e.g. 1.0, 0.5)")
     pr.add_argument("--pids-limit", type=int, help="PIDs limit")
