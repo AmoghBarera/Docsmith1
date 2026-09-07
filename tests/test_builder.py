@@ -36,7 +36,7 @@ def test_build_scratch_copy_only(monkeypatch, tmp_path) -> None:
 
     m = load_manifest("testimg")
     assert m["base"] == "scratch"
-    assert len(m["layers"]) == 2  # FROM + COPY
+    assert len(m["layers"]) == 3  # FROM + WORKDIR + COPY
     assert m["env"]["MSG"] == "hi"
     assert m["cmd"] == ["cat", "/app/hello.txt"]
     assert m["workdir"] == "/app"

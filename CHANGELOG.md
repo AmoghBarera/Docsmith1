@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 ### Fixed
+- **Low (Issue 10):** Verified existing core unit tests and updated `test_builder.py` to correctly test the new multi-layer overlayfs `WORKDIR` behavior.
 - **Low (Issue 9):** Prevented `tar` from prefixing all archive paths with `./` by using `--transform='s,^\./,,'`.
 - **Low (Issue 8):** Changed network constants (`BRIDGE_NAME`, `SUBNET_CIDR`, `SUBNET_PREFIX`) to fall back to environment variables instead of being entirely hardcoded.
 - **Medium (Issue 7):** Added error handling to network teardown logic to prevent failures in `ip netns delete` from blocking IP deallocation.
