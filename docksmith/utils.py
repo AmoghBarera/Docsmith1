@@ -327,7 +327,7 @@ import socket
 
 def run(c, msg):
     if subprocess.call(c, shell=False) != 0:
-        print(f"Error: {msg}", file=sys.stderr)
+        print(f"Error: {{msg}}", file=sys.stderr)
         sys.exit(1)
 
 rootfs = {repr(rootfs_abs)}
