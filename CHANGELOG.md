@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 ### Fixed
+- **High (Issue 4):** Fixed redundant full-filesystem layer snapshots in `builder.py`. The builder now uses `overlayfs` during the build process, capturing only the `upperdir` diffs for each layer. This significantly reduces storage space and improves build performance.
 - **High (Issue 3):** Fixed resource leaks on container exit by adding `SIGINT`/`SIGTERM` handlers and skipping `rm_tree` if `umount` fails.
 - **Medium (Issue 5):** Fixed silent cgroup leaks by explicitly killing any remaining processes in the container's cgroup before attempting to remove it.
 - **High (Issue 2):** Fixed race conditions in IP allocation (`network.py`) and container state management (`state.py`) by adding file locking via `fcntl`.

@@ -61,23 +61,49 @@ def _snapshot_layer(rootfs: Path) -> bytes:
         tmp.unlink(missing_ok=True)
 
 
-def _apply_layer_tar_to_rootfs(rootfs: Path, tar_bytes: bytes) -> None:
-    rm_tree(rootfs)
-    rootfs.mkdir(parents=True)
-    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as f:
-        tmp = Path(f.name)
-    try:
-        tmp.write_bytes(tar_bytes)
-        extract_tar_to(tmp, rootfs)
-    finally:
-        tmp.unlink(missing_ok=True)
+def ensure_layer_extracted_build(digest_hex: str) -> Path:
+    from docksmith.layer_store import layer_tar_path
+    from docksmith.utils import docksmith_home, extract_tar_to
+    ext_dir = docksmith_home() / "cache" / "extracted" / digest_hex
+    if not ext_dir.exists():
+        ext_dir.mkdir(parents=True)
+        extract_tar_to(layer_tar_path(digest_hex), ext_dir)
+    return ext_dir
 
+def _run_with_overlay(layers: list[str], callback: Callable[[Path], None]) -> bytes:
+    import tempfile
+    import subprocess
+    from docksmith.utils import is_linux
 
-def _apply_layer_digest(rootfs: Path, digest: str) -> None:
-    from docksmith.layer_store import read_layer_bytes
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        upper = tdp / "upper"
+        work = tdp / "work"
+        merged = tdp / "merged"
+        upper.mkdir()
+        work.mkdir()
+        merged.mkdir()
 
-    data = read_layer_bytes(digest)
-    _apply_layer_tar_to_rootfs(rootfs, data)
+        lowerdirs = []
+        for l in reversed(layers):
+            lowerdirs.append(str(ensure_layer_extracted_build(l)))
+
+        if lowerdirs and is_linux():
+            lowerdir_str = ":".join(lowerdirs)
+            cmd = [
+                "mount", "-t", "overlay", "overlay",
+                "-o", f"lowerdir={lowerdir_str},upperdir={upper},workdir={work}",
+                str(merged)
+            ]
+            subprocess.run(cmd, check=True)
+
+        try:
+            target = merged if (lowerdirs and is_linux()) else upper
+            callback(target)
+            return _snapshot_layer(upper)
+        finally:
+            if lowerdirs and is_linux():
+                subprocess.run(["umount", str(merged)], check=False)
 
 
 def _mkdir_p(rootfs: Path, path: str) -> None:
@@ -165,122 +191,134 @@ def build_image(
     layers: list[str] = []
     prev_digest: str | None = None
 
-    with tempfile.TemporaryDirectory() as td:
-        rootfs = Path(td) / "rootfs"
-        rootfs.mkdir()
+    idx = 0
+    while idx < len(instructions):
+        ins = instructions[idx]
 
-        idx = 0
-        while idx < len(instructions):
-            ins = instructions[idx]
+        if ins.name == "FROM":
+            if idx != 0:
+                raise ValueError("Only one FROM is supported; it must be the first line of the Docksmithfile.")
+            base_name = str(ins.value or "").strip()
+            if not base_name:
+                raise ValueError("FROM requires a base image name or scratch")
 
-            if ins.name == "FROM":
-                if idx != 0:
-                    raise ValueError("Only one FROM is supported; it must be the first line of the Docksmithfile.")
-                base_name = str(ins.value or "").strip()
-                if not base_name:
-                    raise ValueError("FROM requires a base image name or scratch")
+            base_tar = _base_tarball_path(base_name)
+            if base_name.lower() == "scratch":
+                content_hash = ""
+            elif base_tar is not None:
+                content_hash = sha256_file(base_tar)
+            else:
+                raise FileNotFoundError(
+                    f"Base image '{base_name}' not found. Place a rootfs tarball at "
+                    f"{bases_dir() / (sanitize_base_name(base_name) + '.tar')} "
+                    "or use `FROM scratch` for an empty rootfs."
+                )
 
-                base_tar = _base_tarball_path(base_name)
+            instr_text = ins.raw.strip()
+            ck = compute_cache_key(prev_digest, instr_text, content_hash)
+            hit = cache_get(ck)
+            if hit and has_layer(hit):
+                _log(log, "CACHE HIT")
+                prev_digest = hit
+                layers.append(hit)
+            else:
+                _log(log, "CACHE MISS")
                 if base_name.lower() == "scratch":
-                    content_hash = ""
-                elif base_tar is not None:
-                    content_hash = sha256_file(base_tar)
+                    with tempfile.TemporaryDirectory() as td:
+                        tar_bytes = _snapshot_layer(Path(td))
                 else:
-                    raise FileNotFoundError(
-                        f"Base image '{base_name}' not found. Place a rootfs tarball at "
-                        f"{bases_dir() / (sanitize_base_name(base_name) + '.tar')} "
-                        "or use `FROM scratch` for an empty rootfs."
-                    )
-
-                instr_text = ins.raw.strip()
-                ck = compute_cache_key(prev_digest, instr_text, content_hash)
-                hit = cache_get(ck)
-                if hit and has_layer(hit):
-                    _log(log, "CACHE HIT")
-                    prev_digest = hit
-                    layers.append(hit)
-                    _apply_layer_digest(rootfs, hit)
-                else:
-                    _log(log, "CACHE MISS")
-                    if base_name.lower() == "scratch":
-                        rm_tree(rootfs)
-                        rootfs.mkdir()
-                        tar_bytes = _snapshot_layer(rootfs)
-                    else:
-                        assert base_tar is not None
-                        rm_tree(rootfs)
-                        rootfs.mkdir()
+                    assert base_tar is not None
+                    with tempfile.TemporaryDirectory() as td:
+                        rootfs = Path(td)
                         extract_tar_to(base_tar, rootfs)
                         tar_bytes = _snapshot_layer(rootfs)
-                    digest = store_layer_bytes(tar_bytes)
-                    cache_put(ck, digest)
-                    prev_digest = digest
-                    layers.append(digest)
-                idx += 1
-                continue
+                digest = store_layer_bytes(tar_bytes)
+                cache_put(ck, digest)
+                prev_digest = digest
+                layers.append(digest)
+            idx += 1
+            continue
 
-            if ins.name == "WORKDIR":
-                workdir = str(ins.value or "/")
-                _mkdir_p(rootfs, workdir)
-                idx += 1
-                continue
+        if ins.name == "WORKDIR":
+            workdir = str(ins.value or "/")
+            def cb_wd(merged: Path):
+                _mkdir_p(merged, workdir)
+            tar_bytes = _run_with_overlay(layers, cb_wd)
+            # WORKDIR changes state but also creates a dir, which needs a layer
+            # wait, actually, do we want WORKDIR to create a layer?
+            # Yes, otherwise if later steps don't run, the dir doesn't exist.
+            instr_text = ins.raw.strip()
+            ck = compute_cache_key(prev_digest, instr_text, "")
+            hit = cache_get(ck)
+            if hit and has_layer(hit):
+                _log(log, "CACHE HIT")
+                prev_digest = hit
+                layers.append(hit)
+            else:
+                _log(log, "CACHE MISS")
+                digest = store_layer_bytes(tar_bytes)
+                cache_put(ck, digest)
+                prev_digest = digest
+                layers.append(digest)
+            idx += 1
+            continue
 
-            if ins.name == "ENV":
-                if ins.env:
-                    env.update(ins.env)
-                idx += 1
-                continue
+        if ins.name == "ENV":
+            if ins.env:
+                env.update(ins.env)
+            idx += 1
+            continue
 
-            if ins.name == "CMD":
-                cmd = list(ins.value) if isinstance(ins.value, list) else []
-                idx += 1
-                continue
+        if ins.name == "CMD":
+            cmd = list(ins.value) if isinstance(ins.value, list) else []
+            idx += 1
+            continue
 
-            if ins.name == "COPY":
-                assert ins.copy_src is not None and ins.copy_dest is not None
-                ch = hash_paths_for_copy(context, ins.copy_src)
-                instr_text = ins.raw.strip()
-                ck = compute_cache_key(prev_digest, instr_text, ch)
-                hit = cache_get(ck)
-                if hit and has_layer(hit):
-                    _log(log, "CACHE HIT")
-                    prev_digest = hit
-                    layers.append(hit)
-                    _apply_layer_digest(rootfs, hit)
-                else:
-                    _log(log, "CACHE MISS")
-                    _copy_instruction(context, rootfs, ins)
-                    tar_bytes = _snapshot_layer(rootfs)
-                    digest = store_layer_bytes(tar_bytes)
-                    cache_put(ck, digest)
-                    prev_digest = digest
-                    layers.append(digest)
-                idx += 1
-                continue
+        if ins.name == "COPY":
+            assert ins.copy_src is not None and ins.copy_dest is not None
+            ch = hash_paths_for_copy(context, ins.copy_src)
+            instr_text = ins.raw.strip()
+            ck = compute_cache_key(prev_digest, instr_text, ch)
+            hit = cache_get(ck)
+            if hit and has_layer(hit):
+                _log(log, "CACHE HIT")
+                prev_digest = hit
+                layers.append(hit)
+            else:
+                _log(log, "CACHE MISS")
+                def cb_copy(merged: Path):
+                    _copy_instruction(context, merged, ins)
+                tar_bytes = _run_with_overlay(layers, cb_copy)
+                digest = store_layer_bytes(tar_bytes)
+                cache_put(ck, digest)
+                prev_digest = digest
+                layers.append(digest)
+            idx += 1
+            continue
 
-            if ins.name == "RUN":
-                if not isinstance(ins.value, str) or not ins.value.strip():
-                    raise ValueError("RUN requires a non-empty command string")
-                instr_text = ins.raw.strip()
-                ck = compute_cache_key(prev_digest, instr_text, "")
-                hit = cache_get(ck)
-                if hit and has_layer(hit):
-                    _log(log, "CACHE HIT")
-                    prev_digest = hit
-                    layers.append(hit)
-                    _apply_layer_digest(rootfs, hit)
-                else:
-                    _log(log, "CACHE MISS")
-                    _run_in_chroot(rootfs, ins.value.strip(), workdir, env, log)
-                    tar_bytes = _snapshot_layer(rootfs)
-                    digest = store_layer_bytes(tar_bytes)
-                    cache_put(ck, digest)
-                    prev_digest = digest
-                    layers.append(digest)
-                idx += 1
-                continue
+        if ins.name == "RUN":
+            if not isinstance(ins.value, str) or not ins.value.strip():
+                raise ValueError("RUN requires a non-empty command string")
+            instr_text = ins.raw.strip()
+            ck = compute_cache_key(prev_digest, instr_text, "")
+            hit = cache_get(ck)
+            if hit and has_layer(hit):
+                _log(log, "CACHE HIT")
+                prev_digest = hit
+                layers.append(hit)
+            else:
+                _log(log, "CACHE MISS")
+                def cb_run(merged: Path):
+                    _run_in_chroot(merged, ins.value.strip(), workdir, env, log)
+                tar_bytes = _run_with_overlay(layers, cb_run)
+                digest = store_layer_bytes(tar_bytes)
+                cache_put(ck, digest)
+                prev_digest = digest
+                layers.append(digest)
+            idx += 1
+            continue
 
-            raise ValueError(f"Unexpected instruction: {ins.name}")
+        raise ValueError(f"Unexpected instruction: {ins.name}")
 
     path = save_manifest(
         name=tag,
