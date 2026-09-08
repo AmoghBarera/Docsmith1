@@ -492,7 +492,7 @@ except Exception as e:
             def pump():
                 with open(log_path, "ab") as f:
                     while True:
-                        chunk = proc.stdout.read(4096)
+                        chunk = proc.stdout.read1(4096)
                         if not chunk:
                             break
                         f.write(chunk)
