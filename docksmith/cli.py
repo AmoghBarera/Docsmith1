@@ -100,12 +100,12 @@ def _cmd_rmi(args: argparse.Namespace) -> int:
     return 1
 
 
-def _cmd_exec(args: argparse.Namespace) -> None:
+def _cmd_exec(args: argparse.Namespace) -> int:
     from docksmith.state import load_state
     state = load_state(args.id)
     if not state or state.get("status") != "running":
         print(f"Container {args.id} is not running.")
-        sys.exit(1)
+        return 1
         
     unshare_pid = state["pid"]
     
@@ -117,25 +117,26 @@ def _cmd_exec(args: argparse.Namespace) -> None:
             raise ValueError
     except Exception:
         print(f"Could not find container process for container {args.id}")
-        sys.exit(1)
+        return 1
 
     cmd = ["nsenter", "-t", child_pid, "--all"] + args.cmd
     try:
         os.execvp(cmd[0], cmd)
     except OSError as e:
         print(f"exec failed: {e}")
-        sys.exit(1)
+        return 1
+    return 0
 
-def _cmd_logs(args: argparse.Namespace) -> None:
+def _cmd_logs(args: argparse.Namespace) -> int:
     from docksmith.state import get_container_dir
     log_path = get_container_dir(args.id) / "container.log"
     if not log_path.exists():
         print(f"No logs found for {args.id}")
-        sys.exit(1)
+        return 1
         
     if not args.f:
         sys.stdout.buffer.write(log_path.read_bytes())
-        return
+        return 0
         
     with open(log_path, "rb") as f:
         while True:
@@ -145,8 +146,9 @@ def _cmd_logs(args: argparse.Namespace) -> None:
                 continue
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
+    return 0
 
-def _cmd_stats(args: argparse.Namespace) -> None:
+def _cmd_stats(args: argparse.Namespace) -> int:
     from docksmith.state import load_state
     
     def format_bytes(b: int) -> str:
@@ -207,6 +209,7 @@ def _cmd_stats(args: argparse.Namespace) -> None:
             except Exception: pass
             
         print(f"{cid[:20]:<20} {cpu_pct:<10} {mem_usage} / {mem_max:<10} {net_io}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
